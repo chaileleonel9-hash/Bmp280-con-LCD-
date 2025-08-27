@@ -1,0 +1,104 @@
+Nivelador digital de albañileria
+Roja Chaile Jose - Jimenez Lautaro
+
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <MPU6050.h>
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+MPU6050 mpu; // si tu scanner dio 0x69: MPU6050 mpu(0x69);
+
+const int LED_L2 = 2;  // rojo izquierda exterior
+const int LED_L1 = 3;  // rojo izquierda interior
+const int LED_G  = 4;  // verde centro
+const int LED_R1 = 5;  // rojo derecha interior
+const int LED_R2 = 6;  // rojo derecha exterior
+
+// Umbrales en grados (ajustables):
+float t_centro   = 2.0;   // |ángulo| < 2° -> verde
+float t_un_led   = 5.0;   // 2°–5°  -> 1 rojo
+float t_dos_leds = 10.0;  // >10°   -> 2 rojos
+
+// Filtro y calibración
+float offset = 0.0;       // cero (se mide al inicio)
+float alpha  = 0.15;      // suavizado exponencial
+float angle_f = 0.0;
+
+void setAll(bool l2, bool l1, bool g, bool r1, bool r2) {
+  digitalWrite(LED_L2, l2);
+  digitalWrite(LED_L1, l1);
+  digitalWrite(LED_G,  g);
+  digitalWrite(LED_R1, r1);
+  digitalWrite(LED_R2, r2);
+}
+
+void setup() {
+  Wire.begin();
+  Serial.begin(9600);
+
+  pinMode(LED_L2, OUTPUT);
+  pinMode(LED_L1, OUTPUT);
+  pinMode(LED_G,  OUTPUT);
+  pinMode(LED_R1, OUTPUT);
+  pinMode(LED_R2, OUTPUT);
+  setAll(LOW,LOW,LOW,LOW,LOW);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0,0); lcd.print("Nivel Digital");
+  lcd.setCursor(0,1); lcd.print("Calibrando...");
+
+  mpu.initialize();
+  if (!mpu.testConnection()) {
+    lcd.clear(); lcd.print("Error MPU6050");
+    while(1);
+  }
+
+  // Calibrar cero: apoya el nivel en "horizontal" y no lo muevas 1 seg.
+  delay(300);
+  long N = 200;
+  double sum = 0;
+  for (int i=0;i<N;i++){
+    int16_t ax, ay, az; mpu.getAcceleration(&ax,&ay,&az);
+    // Angulo respecto a eje X; si tu montaje invierte lados, cambia el signo
+    float a = atan2(ay, az) * 180.0 / PI;
+    sum += a;
+    delay(5);
+  }
+  offset = sum / N;
+  lcd.setCursor(0,1); lcd.print("Listo          ");
+}
+
+void loop() {
+  int16_t ax, ay, az;
+  mpu.getAcceleration(&ax,&ay,&az);
+
+  float angle = atan2(ay, az) * 180.0 / PI;
+  angle -= offset;                 // quitar cero
+  angle_f = angle_f + alpha*(angle - angle_f);  // filtro
+
+  // Mostrar en LCD
+  lcd.setCursor(0,0); lcd.print("Ang: ");
+  lcd.print(angle_f,1);
+  lcd.print((char)223); // símbolo °
+  lcd.print("    ");    // limpiar restos
+
+  // Lógica de barra
+  setAll(LOW,LOW,LOW,LOW,LOW);
+  float a = angle_f;
+
+  if (fabs(a) < t_centro) {
+    // nivelado → verde
+    digitalWrite(LED_G, HIGH);
+  } else if (a < -t_centro) {
+    // inclinado a la IZQUIERDA (negativo)
+    digitalWrite(LED_L1, HIGH);                 // 1 rojo
+    if (fabs(a) >= t_dos_leds) digitalWrite(LED_L2, HIGH); // 2 rojos
+  } else if (a > t_centro) {
+    // inclinado a la DERECHA (positivo)
+    digitalWrite(LED_R1, HIGH);                 // 1 rojo
+    if (fabs(a) >= t_dos_leds) digitalWrite(LED_R2, HIGH); // 2 rojos
+  }
+
+  delay(80);
+}
